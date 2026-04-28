@@ -1,0 +1,2 @@
+[console_scripts]
+form-agent = form_agent.cli:main

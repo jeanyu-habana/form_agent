@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "form-agent"
+version = "0.1.0"
+description = "Intelligent Form Agent: extract, query, and summarize forms with LLMs."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "openai>=1.40.0",
+    "pypdf>=4.2.0",
+    "pdf2image>=1.17.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "chromadb>=0.5.0",
+    "pydantic>=2.6.0",
+    "python-dotenv>=1.0.0",
+    "click>=8.1.0",
+    "tenacity>=8.2.0",
+    "eval_type_backport>=0.2.0; python_version < '3.10'",
+]
+
+[project.scripts]
+form-agent = "form_agent.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

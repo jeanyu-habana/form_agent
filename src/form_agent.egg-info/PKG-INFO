@@ -1,0 +1,211 @@
+Metadata-Version: 2.4
+Name: form-agent
+Version: 0.1.0
+Summary: Intelligent Form Agent: extract, query, and summarize forms with LLMs.
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.40.0
+Requires-Dist: pypdf>=4.2.0
+Requires-Dist: pdf2image>=1.17.0
+Requires-Dist: pytesseract>=0.3.10
+Requires-Dist: Pillow>=10.0.0
+Requires-Dist: chromadb>=0.5.0
+Requires-Dist: pydantic>=2.6.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: click>=8.1.0
+Requires-Dist: tenacity>=8.2.0
+
+# Intelligent Form Agent
+
+A Python agent that ingests heterogeneous forms (digital PDFs, scanned PDFs/images, plain text), automatically discovers their fields, answers questions about a single form **with citations and confidence**, summarizes them, and answers **holistic questions across many forms** by routing between RAG and structured aggregation.
+
+> **Creative extensions** (highlighted, not buried):
+> 1. **Template-free schema inference** — the agent invents the field schema for each form on the fly.
+> 2. **Per-answer citations + confidence** — every extracted field and every QA answer cites the source field/page+snippet and a confidence score.
+> 3. **Cross-form RAG with aggregation router** — `ask_all` decides per question whether to do vector RAG over page chunks or a structured pass over already-extracted fields (so "total of all expense reports" is computed from data, not hallucinated).
+
+---
+
+## What it does
+
+```
+file → parse (text + OCR fallback) → LLM extract (schema + fields w/ citations)
+                                           │
+       ┌───────────────────────────────────┼───────────────────────────────┐
+       ▼                                   ▼                               ▼
+   single-form Q&A                  single-form summary           cross-form Q&A (RAG │ aggregate)
+```
+
+See [docs/architecture.md](docs/architecture.md) for the diagram and [docs/prompts.md](docs/prompts.md) for every prompt template.
+
+## Repo layout
+
+```
+form_agent/
+├── src/form_agent/      # main agent code
+├── data/                # synthetic sample forms + generator
+├── notebooks/           # exploration + lightweight RAG eval
+├── tests/               # pytest, mocked LLM (no live API calls)
+├── ui/streamlit_app.py  # optional UI
+├── docs/                # architecture + prompt docs
+├── requirements.txt
+├── pyproject.toml
+└── .env.example
+```
+
+## Setup
+
+Requires Python 3.10+. Tesseract is needed for OCR (scanned PDFs/images).
+
+```bash
+# 1. system dep for OCR (skip if you don't need scanned PDFs)
+brew install tesseract poppler        # macOS
+# sudo apt install tesseract-ocr poppler-utils   # Debian/Ubuntu
+
+# 2. python env
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e .                      # installs the `form-agent` CLI
+
+# 3. credentials
+cp .env.example .env
+# edit .env and set OPENAI_API_KEY=sk-...
+```
+
+## Quick start
+
+```bash
+# Generate ~5 synthetic sample forms (job apps, medical intake, expense reports;
+# one of the expense reports is rendered as a scanned image-PDF to exercise OCR).
+python data/generate_samples.py
+
+# Ingest them all
+form-agent ingest data/samples/*.pdf
+
+# List
+form-agent list
+```
+
+## Three demo runs
+
+### Demo 1 — Single-form QA with citation
+
+```bash
+form-agent ingest data/samples/job_app_01.pdf
+form-agent list                          # copy the id, e.g. job_app_01-ab12cd34ef56
+form-agent ask job_app_01-ab12cd34ef56 "What is the candidate's most recent employer?"
+```
+
+Expected output (shape):
+
+```
+Q: What is the candidate's most recent employer?
+A: Acme Cloud Systems
+confidence: 0.95
+citations:
+  - field=most_recent_employer page=1 snippet='Most Recent Employer: Acme Cloud Systems'
+```
+
+### Demo 2 — Single-form summary
+
+```bash
+form-agent summarize <medical_intake_form_id>
+```
+
+Expected (shape):
+
+```
+TL;DR:
+  - 38-year-old patient with persistent migraine for 3 weeks.
+  - PMH: hypertension; allergies: penicillin.
+  - Current meds include sumatriptan and lisinopril.
+
+Key parties:
+  - Aaliyah Johnson (patient)
+  - Marcus Johnson (emergency contact)
+Key dates:
+  - DOB: 1988-03-22
+  - Visit date: 2026-04-19
+Key amounts: (none)
+Obligations / actions:
+  - Follow-up needed for migraine workup
+Risks / anomalies:
+  - Penicillin allergy noted
+Overall:
+  Patient presents with photophobia/nausea-associated migraines on a background of controlled hypertension.
+```
+
+### Demo 3 — Holistic cross-form questions (RAG + aggregation)
+
+```bash
+form-agent ingest data/samples/*.pdf
+
+# Aggregational question -> the router picks 'aggregate', computes from extracted fields
+form-agent ask-all "What is the total of all expense reports?"
+
+# Open-ended question -> the router picks 'rag', retrieves top-k page chunks
+form-agent ask-all "Which applicants have more than 5 years of experience?"
+```
+
+Expected (shape):
+
+```
+Q: What is the total of all expense reports?
+strategy: aggregate
+A: $2,376.75 across 2 expense reports (E-10472: $1842.55, E-22310: $534.20).
+confidence: 0.99
+forms considered: 2
+citations:
+  - field=expense_report_01-...:total_amount ...
+```
+
+## Optional UI
+
+```bash
+streamlit run ui/streamlit_app.py
+```
+
+Tabs: **Extracted Fields**, **Ask (single)**, **Summary**, **Ask across all**. Uploads ingest into the same store the CLI uses.
+
+## CLI reference
+
+| Command | Description |
+| --- | --- |
+| `form-agent ingest <path>...` | Parse + extract + index one or more forms |
+| `form-agent list` | List ingested forms |
+| `form-agent show <form_id>` | Print stored JSON for a form |
+| `form-agent ask <form_id> <question>` | Single-form QA |
+| `form-agent summarize <form_id>` | Structured summary |
+| `form-agent ask-all <question> [-k N]` | Cross-form QA with router |
+
+## Tests
+
+```bash
+pytest -q
+```
+
+Tests use a mocked LLM client and a temp store directory — **no live API calls** and no Tesseract requirement.
+
+## Configuration
+
+Environment variables (see `.env.example`):
+
+| Var | Default | Notes |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | — | required for live runs |
+| `FORM_AGENT_CHAT_MODEL` | `gpt-4o-mini` | extraction/QA |
+| `FORM_AGENT_SUMMARY_MODEL` | `gpt-4o-mini` | bump to `gpt-4o` for higher-quality summaries |
+| `FORM_AGENT_EMBED_MODEL` | `text-embedding-3-small` | RAG embeddings |
+| `FORM_AGENT_STORE_DIR` | `.form_store` | JSON forms + Chroma persistent dir |
+
+## Design notes
+
+- **Two-pass extraction** keeps the agent template-free yet precise: pass 1 invents a `FieldSpec` schema for the form; pass 2 fills it with `{value, page, snippet, confidence}` so downstream consumers never re-read raw text for low-level facts.
+- **Citations are a contract**, enforced by pydantic on every QA/summary response. If the LLM omits them the response is downgraded (confidence 0) rather than silently lost.
+- **OCR fallback** is per-page (chars-below-threshold heuristic), so a hybrid PDF — some pages text-extractable, some scanned — is handled correctly without re-OCR-ing the whole document.
+- **Vector store** indexes per-page chunks tagged with `form_id` and `page`, enabling cross-form retrieval and per-form filtering.
+- **Router** for `ask_all` keeps aggregational answers exact (computed from JSON) and open-ended answers grounded in retrieved excerpts.
+
+## Out of scope (deliberate)
+
+Auth/multi-user, deployment infra, fine-tuning, anomaly-detection dashboards, training own models.
