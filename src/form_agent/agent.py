@@ -43,27 +43,66 @@ class FormAgent:
             span.set_attribute("ingest.form_type", stored.form_type)
             try:
                 self.vectors.index_form(stored)
-            except Exception as e:  # pragma: no cover - vector backend issues shouldn't block ingestion
+            except Exception as e:
                 logger.warning("Vector indexing failed for %s: %s", stored.id, e)
             self._blobs.upload_form(stored)
         return stored
 
     def list_forms(self) -> list[StoredForm]:
-        return self.store.list_forms()
+        with _tracer.start_as_current_span("form_agent.list_forms") as span:
+            forms = self.store.list_forms()
+            span.set_attribute("list.count", len(forms))
+            return forms
 
     def get_form(self, form_id: str) -> StoredForm | None:
-        return self.store.get(form_id)
+        with _tracer.start_as_current_span("form_agent.get_form") as span:
+            span.set_attribute("form.id", form_id)
+            form = self.store.get(form_id)
+            span.set_attribute("form.found", form is not None)
+            return form
 
     def ask(self, form_id: str, question: str) -> Answer:
-        form = self._require(form_id)
-        return self.qa.ask(form, question)
+        with _tracer.start_as_current_span("form_agent.ask") as span:
+            span.set_attribute("ask.form_id", form_id)
+            span.set_attribute("ask.question", question)
+            form = self._require(form_id)
+            span.set_attribute("ask.form_type", form.form_type)
+            answer = self.qa.ask(form, question)
+            span.set_attribute("ask.confidence", answer.confidence)
+            span.set_attribute("ask.citation_count", len(answer.citations))
+            logger.info(
+                "ask form_id=%s confidence=%.2f citations=%d",
+                form_id, answer.confidence, len(answer.citations),
+            )
+            return answer
 
     def summarize(self, form_id: str) -> Summary:
-        form = self._require(form_id)
-        return self.summarizer.summarize(form)
+        with _tracer.start_as_current_span("form_agent.summarize") as span:
+            span.set_attribute("summarize.form_id", form_id)
+            form = self._require(form_id)
+            span.set_attribute("summarize.form_type", form.form_type)
+            summary = self.summarizer.summarize(form)
+            span.set_attribute("summarize.risk_count", len(summary.risks_and_anomalies))
+            span.set_attribute("summarize.obligation_count", len(summary.obligations_and_actions))
+            logger.info(
+                "summarize form_id=%s form_type=%s",
+                form_id, form.form_type,
+            )
+            return summary
 
     def ask_all(self, question: str, top_k: int = 6) -> MultiAnswer:
-        return self.multi_qa.ask(question, top_k=top_k)
+        with _tracer.start_as_current_span("form_agent.ask_all") as span:
+            span.set_attribute("ask_all.question", question)
+            span.set_attribute("ask_all.top_k", top_k)
+            answer = self.multi_qa.ask(question, top_k=top_k)
+            span.set_attribute("ask_all.strategy", answer.strategy)
+            span.set_attribute("ask_all.confidence", answer.confidence)
+            span.set_attribute("ask_all.forms_considered", answer.forms_considered)
+            logger.info(
+                "ask_all strategy=%s confidence=%.2f forms=%d",
+                answer.strategy, answer.confidence, answer.forms_considered,
+            )
+            return answer
 
     def _require(self, form_id: str) -> StoredForm:
         form = self.store.get(form_id)
