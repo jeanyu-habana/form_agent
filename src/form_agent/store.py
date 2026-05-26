@@ -49,7 +49,9 @@ class FormStore:
 
     @staticmethod
     def make_id(source_path: str, text: str) -> str:
-        h = hashlib.sha1(f"{source_path}|{text[:512]}".encode("utf-8")).hexdigest()[:12]
+        h = hashlib.sha1(
+            f"{source_path}|{text[:512]}".encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
         stem = Path(source_path).stem.lower().replace(" ", "_")[:32]
         return f"{stem}-{h}"
 
@@ -146,3 +148,30 @@ class VectorStore:
         for d, m, dist in zip(docs, metas, dists):
             out.append({"document": d, "metadata": m, "distance": dist})
         return out
+
+
+class BlobStore:
+    """Optional Azure Blob Storage sink — archives extracted-form JSON on ingest.
+
+    Silently disabled when ``AZURE_BLOB_CONNECTION_STRING`` is not configured.
+    All upload errors are swallowed with a warning so ingestion is never blocked.
+    """
+
+    def __init__(self) -> None:
+        self._enabled = bool(CONFIG.blob_connection_string)
+
+    def upload_form(self, stored: StoredForm) -> None:
+        """Upload ``stored`` as ``{form_id}.json`` into the configured container."""
+        if not self._enabled:
+            return
+        try:
+            from azure.storage.blob import BlobServiceClient
+
+            blob_name = f"{stored.id}.json"
+            payload = json.dumps(asdict(stored), indent=2, default=str).encode("utf-8")
+            client = BlobServiceClient.from_connection_string(CONFIG.blob_connection_string)
+            blob_client = client.get_blob_client(container=CONFIG.blob_container, blob=blob_name)
+            blob_client.upload_blob(payload, overwrite=True)
+            logger.info("Uploaded form JSON to blob %s/%s", CONFIG.blob_container, blob_name)
+        except Exception as exc:  # pragma: no cover — network / auth errors at runtime
+            logger.warning("Blob upload failed for %s: %s", stored.id, exc)

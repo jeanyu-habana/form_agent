@@ -26,6 +26,11 @@ class Config:
     azure_chat_deployment: str | None
     azure_summary_deployment: str | None
     azure_embed_deployment: str | None
+    # Observability
+    appinsights_connection_string: str | None
+    # Azure Blob Storage (optional — used to archive extracted JSON on ingest)
+    blob_connection_string: str | None
+    blob_container: str
 
     @classmethod
     def load(cls) -> "Config":
@@ -47,6 +52,9 @@ class Config:
             azure_chat_deployment=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT"),
             azure_summary_deployment=os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT"),
             azure_embed_deployment=os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT"),
+            appinsights_connection_string=os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"),
+            blob_connection_string=os.getenv("AZURE_BLOB_CONNECTION_STRING"),
+            blob_container=os.getenv("AZURE_BLOB_CONTAINER", "form-agent-forms"),
         )
 
 

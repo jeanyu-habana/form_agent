@@ -12,6 +12,7 @@ src/form_agent/parsing.py
 src/form_agent/qa.py
 src/form_agent/store.py
 src/form_agent/summarize.py
+src/form_agent/telemetry.py
 src/form_agent.egg-info/PKG-INFO
 src/form_agent.egg-info/SOURCES.txt
 src/form_agent.egg-info/dependency_links.txt
