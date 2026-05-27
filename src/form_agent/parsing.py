@@ -1,4 +1,10 @@
-"""File parsing: PDF (digital + scanned) and plain text. OCR fallback for scanned PDFs/images."""
+"""File parsing: PDF (digital + scanned) and plain text. OCR fallback for scanned PDFs/images.
+
+Azure AI Document Intelligence (prebuilt-layout) is used automatically when
+AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT is set, producing higher-quality text with
+preserved table structure and reading order. Falls back to pypdf + Tesseract when
+the endpoint is not configured or DI raises an error.
+"""
 from __future__ import annotations
 
 import logging
@@ -41,6 +47,16 @@ def parse_file(path: str | Path) -> ParsedDocument:
 
 
 def _parse_pdf(path: Path) -> ParsedDocument:
+    from .config import CONFIG
+
+    if CONFIG.document_intelligence_endpoint:
+        try:
+            return _parse_with_document_intelligence(path)
+        except Exception as e:
+            logger.warning(
+                "Document Intelligence failed for %s (%s); falling back to pypdf+Tesseract", path.name, e
+            )
+
     from pypdf import PdfReader
 
     reader = PdfReader(str(path))
@@ -69,6 +85,119 @@ def _parse_pdf(path: Path) -> ParsedDocument:
     return ParsedDocument(source_path=str(path), pages=pages, ocr_used=ocr_used)
 
 
+def _parse_image(path: Path) -> ParsedDocument:
+    from .config import CONFIG
+
+    if CONFIG.document_intelligence_endpoint:
+        try:
+            return _parse_with_document_intelligence(path)
+        except Exception as e:
+            logger.warning(
+                "Document Intelligence failed for %s (%s); falling back to Tesseract", path.name, e
+            )
+
+    try:
+        import pytesseract
+        from PIL import Image
+    except ImportError as e:  # pragma: no cover
+        raise RuntimeError("pytesseract/Pillow required for image input") from e
+    text = pytesseract.image_to_string(Image.open(path))
+    return ParsedDocument(source_path=str(path), pages=[text], ocr_used=True)
+
+
+def _parse_with_document_intelligence(path: Path) -> ParsedDocument:
+    """Use Azure AI Document Intelligence (prebuilt-layout) to extract page text.
+
+    Reconstructs ``pages`` from DI's paragraph and table content, preserving
+    reading order and rendering tables as plain-text grids. Sets
+    ``metadata["di_model"]`` for observability.
+    """
+    from azure.ai.documentintelligence import DocumentIntelligenceClient
+    from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
+    from azure.identity import DefaultAzureCredential
+
+    from .config import CONFIG
+
+    endpoint = CONFIG.document_intelligence_endpoint  # already checked before calling
+    credential = DefaultAzureCredential()
+    client = DocumentIntelligenceClient(endpoint=endpoint, credential=credential)
+
+    with open(path, "rb") as fh:
+        file_bytes = fh.read()
+
+    poller = client.begin_analyze_document(
+        "prebuilt-layout",
+        AnalyzeDocumentRequest(bytes_source=file_bytes),
+    )
+    result = poller.result()
+
+    pages_text: list[str] = []
+    di_pages = result.pages or []
+
+    # Build a set of paragraph spans that belong to tables so we skip them
+    # when iterating paragraphs (tables are rendered separately).
+    table_span_offsets: set[int] = set()
+    for table in result.tables or []:
+        for region in table.bounding_regions or []:
+            pass  # bounding regions are by page; we use cell content directly
+        for cell in table.cells or []:
+            for span in cell.spans or []:
+                table_span_offsets.add(span.offset)
+
+    for page in di_pages:
+        parts: list[str] = []
+
+        # Collect paragraph offsets on this page for ordering
+        page_start = min((s.offset for p in (page.words or []) for s in (p.spans or [])), default=0)
+        page_end = max(
+            (s.offset + s.length for p in (page.words or []) for s in (p.spans or [])), default=0
+        )
+
+        # Add paragraphs in order, skipping those that are part of tables
+        for para in result.paragraphs or []:
+            para_spans = para.spans or []
+            if not para_spans:
+                continue
+            offset = para_spans[0].offset
+            # Only include paragraphs on this page (rough check by offset range)
+            if page_end and not (page_start <= offset <= page_end):
+                continue
+            if offset in table_span_offsets:
+                continue
+            if para.content:
+                parts.append(para.content)
+
+        # Append tables that appear on this page as plain-text grids
+        for table in result.tables or []:
+            in_this_page = any(
+                r.page_number == page.page_number for r in (table.bounding_regions or [])
+            )
+            if not in_this_page:
+                continue
+            row_count = table.row_count or 0
+            col_count = table.column_count or 0
+            grid: list[list[str]] = [[""] * col_count for _ in range(row_count)]
+            for cell in table.cells or []:
+                r, c = cell.row_index or 0, cell.column_index or 0
+                if r < row_count and c < col_count:
+                    grid[r][c] = (cell.content or "").replace("\n", " ")
+            parts.append("\n".join(" | ".join(row) for row in grid))
+
+        pages_text.append("\n".join(parts).strip())
+
+    # If DI returned no page objects (e.g. single-page image), treat content as one page
+    if not pages_text and result.content:
+        pages_text = [result.content]
+
+    logger.info("Document Intelligence parsed %s: %d page(s)", path.name, len(pages_text))
+    return ParsedDocument(
+        source_path=str(path),
+        pages=pages_text,
+        ocr_used=True,  # DI always handles scanned content transparently
+        metadata={"di_model": "prebuilt-layout"},
+    )
+
+
 def _ocr_pdf_pages(path: Path, indices: list[int]) -> list[str]:
     """Render given page indices to images and OCR them. Returns text per requested index."""
     try:
@@ -91,13 +220,3 @@ def _ocr_pdf_pages(path: Path, indices: list[int]) -> list[str]:
             logger.warning("OCR failed on %s page %d: %s", path.name, idx + 1, e)
             out.append("")
     return out
-
-
-def _parse_image(path: Path) -> ParsedDocument:
-    try:
-        import pytesseract
-        from PIL import Image
-    except ImportError as e:  # pragma: no cover
-        raise RuntimeError("pytesseract/Pillow required for image input") from e
-    text = pytesseract.image_to_string(Image.open(path))
-    return ParsedDocument(source_path=str(path), pages=[text], ocr_used=True)

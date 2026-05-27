@@ -31,6 +31,8 @@ class Config:
     # Azure Blob Storage (optional — used to archive extracted JSON on ingest)
     blob_connection_string: str | None
     blob_container: str
+    # Azure AI Document Intelligence (optional — replaces pypdf/Tesseract for PDFs/images)
+    document_intelligence_endpoint: str | None
 
     @classmethod
     def load(cls) -> "Config":
@@ -55,6 +57,7 @@ class Config:
             appinsights_connection_string=os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"),
             blob_connection_string=os.getenv("AZURE_BLOB_CONNECTION_STRING"),
             blob_container=os.getenv("AZURE_BLOB_CONTAINER", "form-agent-forms"),
+            document_intelligence_endpoint=os.getenv("AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT"),
         )
 
 
