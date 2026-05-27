@@ -64,7 +64,7 @@ class FormStore:
             pages=doc.pages,
             schema=[s.model_dump() for s in result.schema_],
             fields={k: v.model_dump() for k, v in result.fields.items()},
-            metadata={"ocr_used": doc.ocr_used},
+            metadata={"ocr_used": doc.ocr_used, **doc.metadata},
         )
         self._path(form_id).write_text(json.dumps(asdict(stored), indent=2, default=str))
         return stored

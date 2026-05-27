@@ -114,12 +114,13 @@ def _parse_with_document_intelligence(path: Path) -> ParsedDocument:
     """
     from azure.ai.documentintelligence import DocumentIntelligenceClient
     from azure.ai.documentintelligence.models import AnalyzeDocumentRequest
-    from azure.identity import DefaultAzureCredential
+    from azure.core.credentials import AzureKeyCredential
+    import os
 
     from .config import CONFIG
 
     endpoint = CONFIG.document_intelligence_endpoint  # already checked before calling
-    credential = DefaultAzureCredential()
+    credential = AzureKeyCredential(os.environ["AZURE_DOCUMENT_INTELLIGENCE_KEY"])
     client = DocumentIntelligenceClient(endpoint=endpoint, credential=credential)
 
     with open(path, "rb") as fh:
@@ -147,21 +148,17 @@ def _parse_with_document_intelligence(path: Path) -> ParsedDocument:
     for page in di_pages:
         parts: list[str] = []
 
-        # Collect paragraph offsets on this page for ordering
-        page_start = min((s.offset for p in (page.words or []) for s in (p.spans or [])), default=0)
-        page_end = max(
-            (s.offset + s.length for p in (page.words or []) for s in (p.spans or [])), default=0
-        )
-
-        # Add paragraphs in order, skipping those that are part of tables
+        # Add paragraphs that belong to this page via bounding_regions
+        page_num = page.page_number
         for para in result.paragraphs or []:
+            # Check if paragraph is on this page via bounding_regions
+            para_pages = [r.page_number for r in (para.bounding_regions or [])]
+            if para_pages and page_num not in para_pages:
+                continue
             para_spans = para.spans or []
             if not para_spans:
                 continue
             offset = para_spans[0].offset
-            # Only include paragraphs on this page (rough check by offset range)
-            if page_end and not (page_start <= offset <= page_end):
-                continue
             if offset in table_span_offsets:
                 continue
             if para.content:
