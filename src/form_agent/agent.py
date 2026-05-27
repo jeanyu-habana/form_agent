@@ -65,16 +65,22 @@ class FormAgent:
         with _tracer.start_as_current_span("form_agent.ask") as span:
             span.set_attribute("ask.form_id", form_id)
             span.set_attribute("ask.question", question)
-            form = self._require(form_id)
-            span.set_attribute("ask.form_type", form.form_type)
-            answer = self.qa.ask(form, question)
-            span.set_attribute("ask.confidence", answer.confidence)
-            span.set_attribute("ask.citation_count", len(answer.citations))
-            logger.info(
-                "ask form_id=%s confidence=%.2f citations=%d",
-                form_id, answer.confidence, len(answer.citations),
-            )
-            return answer
+            try:
+                form = self._require(form_id)
+                span.set_attribute("ask.form_type", form.form_type)
+                answer = self.qa.ask(form, question)
+                span.set_attribute("ask.confidence", answer.confidence)
+                span.set_attribute("ask.citation_count", len(answer.citations))
+                logger.info(
+                    "ask form_id=%s confidence=%.2f citations=%d",
+                    form_id, answer.confidence, len(answer.citations),
+                )
+                return answer
+            except Exception as e:
+                span.set_attribute("ask.error", str(e))
+                span.set_status(trace.StatusCode.ERROR, str(e))
+                logger.error("ask failed form_id=%s error=%s", form_id, e)
+                raise
 
     def summarize(self, form_id: str) -> Summary:
         with _tracer.start_as_current_span("form_agent.summarize") as span:
